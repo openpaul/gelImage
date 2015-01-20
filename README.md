@@ -20,6 +20,8 @@ As you run the script in Python a window should open. A workflow could look like
 - add labels
  - click on the positions where to show the label (only horizontal for now)
 
+![Screenshot gelImage](https://raw.githubusercontent.com/openpaul/gelImage/master/screenshot.png)
+
 ## Version info:
 Features and limitations:
 
