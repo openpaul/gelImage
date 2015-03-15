@@ -19,13 +19,10 @@ import wx.lib.wxcairo
 import cairo
 
 import os.path
-#import os
 
-# new image:
 # to load images:
 from PIL import Image
 import PIL.ImageOps 
-import tifffile as tiff
 import numpy
 
 import math
@@ -38,27 +35,6 @@ labelList = {
 				"ABC": ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
 				
 			}
-
-
-import time
-
-class Timer(object):
-    def __init__(self, verbose=False):
-        self.verbose = verbose
-
-    def __enter__(self):
-        self.start = time.time()
-        return self
-
-    def __exit__(self, *args):
-        self.end = time.time()
-        self.secs = self.end - self.start
-        self.msecs = self.secs * 1000  # millisecs
-        if self.verbose:
-            print 'elapsed time: %f ms' % self.msecs
-
-
-
 
 
 class BufferedWindow(wx.Window):
@@ -148,10 +124,16 @@ class BufferedWindow(wx.Window):
         self.Refresh()
         self.Update()
 
-#wx.ScrolledWindow 
+
+
+
+
+
+
 class DrawingArea(BufferedWindow):
-	'''Class to provide the drawing, not really a good idea I guess.
-		maybe a single class would be enough'''
+	'''	Class to provide the drawing canvas
+		it handles vereythink from drag and drop to exporting the svg file
+	'''
 	def __init__ (self ,parent, title, infos, ladders ):
 		super(DrawingArea , self).__init__ (parent=parent,id=wx.ID_ANY)
 		self.infos 		= infos
@@ -815,8 +797,14 @@ class DrawingArea(BufferedWindow):
 
 
 
-class gelImage(wx.Frame):
 
+
+
+class gelImage(wx.Frame):
+	'''
+		Base class of the script.
+		Inits gui and handles user input
+	'''
 	def __init__(self, *args, **kwargs):
 		super(gelImage, self).__init__(*args, **kwargs) 
 		
@@ -860,6 +848,7 @@ class gelImage(wx.Frame):
 		# update infos if changed
 		self.infos = self.cairo.returnInfo()
 		self.cairo.updateGUI(self.infos)
+
 
 	def InitUI(self):
 		#----------------------------------------------------
@@ -1336,20 +1325,7 @@ class gelImage(wx.Frame):
 		self.rotateTxt.SetLabel("%s degree" % (str(val))) 
 		self.updateGUI()
 		return True
-	
-	'''
-	def onFontsizeSelect(self, e):
-		self.infos["fontsize"] = self.labelFontsize.GetStringSelection()
-		#print self.infos["fontsize"]
-		self.updateGUI()
-	
-	def onFontFaceSelect(self, e):
-		self.infos["fontface"] = self.labelFontFace.GetStringSelection()
-		print self.infos["fontface"]
-		self.updateGUI()
-	
-	'''
-	
+
 	def remLadder(self,e):
 		self.cairo.removeLadders()
 		self.updateGUI()
@@ -1361,6 +1337,8 @@ class gelImage(wx.Frame):
 	
 
 
+
+# start the main loop here
 def main():
     ex = wx.App()
     f = gelImage(None)
