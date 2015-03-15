@@ -12,9 +12,6 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-# Copyright (C) 2015 Paul Saary
-#
 
 
 import wx
@@ -22,15 +19,19 @@ import wx.lib.wxcairo
 import cairo
 
 import os.path
+#import os
 
 # new image:
 # to load images:
 from PIL import Image
 import PIL.ImageOps 
+import tifffile as tiff
 import numpy
 
 import math
 
+
+USE_BUFFERED_DC = True
 
 labelList = {
 				"abc": ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'],
@@ -39,7 +40,116 @@ labelList = {
 			}
 
 
-class DrawingArea(wx.Panel):
+import time
+
+class Timer(object):
+    def __init__(self, verbose=False):
+        self.verbose = verbose
+
+    def __enter__(self):
+        self.start = time.time()
+        return self
+
+    def __exit__(self, *args):
+        self.end = time.time()
+        self.secs = self.end - self.start
+        self.msecs = self.secs * 1000  # millisecs
+        if self.verbose:
+            print 'elapsed time: %f ms' % self.msecs
+
+
+
+
+
+class BufferedWindow(wx.Window):
+
+    """
+
+    A Buffered window class.
+
+    To use it, subclass it and define a Draw(DC) method that takes a DC
+    to draw to. In that method, put the code needed to draw the picture
+    you want. The window will automatically be double buffered, and the
+    screen will be automatically updated when a Paint event is received.
+
+    When the drawing needs to change, you app needs to call the
+    UpdateDrawing() method. Since the drawing is stored in a bitmap, you
+    can also save the drawing to file by calling the
+    SaveToFile(self, file_name, file_type) method.
+
+    """
+    def __init__(self, *args, **kwargs):
+        # make sure the NO_FULL_REPAINT_ON_RESIZE style flag is set.
+        kwargs['style'] = kwargs.setdefault('style', wx.NO_FULL_REPAINT_ON_RESIZE) | wx.NO_FULL_REPAINT_ON_RESIZE
+        wx.Window.__init__(self, *args, **kwargs)
+
+        wx.EVT_PAINT(self, self.OnPaint)
+        wx.EVT_SIZE(self, self.OnSize)
+
+        # OnSize called to make sure the buffer is initialized.
+        # This might result in OnSize getting called twice on some
+        # platforms at initialization, but little harm done.
+        self.OnSize(None)
+        self.paint_count = 0
+
+    def Draw(self, dc):
+        ## just here as a place holder.
+        ## This method should be over-ridden when subclassed
+        pass
+
+    def OnPaint(self, event):
+        # All that is needed here is to draw the buffer to screen
+        if USE_BUFFERED_DC:
+            dc = wx.BufferedPaintDC(self, self._Buffer)
+        else:
+            dc = wx.PaintDC(self)
+            dc.DrawBitmap(self._Buffer, 0, 0)
+
+    def OnSize(self,event):
+        # The Buffer init is done here, to make sure the buffer is always
+        # the same size as the Window
+        #Size  = self.GetClientSizeTuple()
+        Size  = self.ClientSize
+
+        # Make new offscreen bitmap: this bitmap will always have the
+        # current drawing in it, so it can be used to save the image to
+        # a file, or whatever.
+        self._Buffer = wx.EmptyBitmap(*Size)
+        self.UpdateDrawing()
+
+    def SaveToFile(self, FileName, FileType=wx.BITMAP_TYPE_PNG):
+        ## This will save the contents of the buffer
+        ## to the specified file. See the wxWindows docs for 
+        ## wx.Bitmap::SaveFile for the details
+        self._Buffer.SaveFile(FileName, FileType)
+
+    def UpdateDrawing(self):
+        """
+        This would get called if the drawing needed to change, for whatever reason.
+
+        The idea here is that the drawing is based on some data generated
+        elsewhere in the system. If that data changes, the drawing needs to
+        be updated.
+
+        This code re-draws the buffer, then calls Update, which forces a paint event.
+        """
+        dc = wx.MemoryDC()
+        dc.SelectObject(self._Buffer)
+        self.Draw(dc)
+        del dc # need to get rid of the MemoryDC before Update() is called.
+        self.Refresh()
+        self.Update()
+
+    def ExportSVG(self, context):
+        dc = wx.MemoryDC()
+        dc.SelectObject(self._Buffer)
+        self.Draw(dc, True, context)
+        del dc # need to get rid of the MemoryDC before Update() is called.
+        self.Refresh()
+        self.Update()
+
+#wx.ScrolledWindow 
+class DrawingArea(BufferedWindow):
 	'''Class to provide the drawing, not really a good idea I guess.
 		maybe a single class would be enough'''
 	def __init__ (self ,parent, title, infos, ladders ):
@@ -65,17 +175,22 @@ class DrawingArea(wx.Panel):
 		
 		self.laneMarkers 	= []
 		
-		
+		self.scroll		= (0,0)
+		self.zoom		= 1
 
 		
 		self.objPath    = {}
 		
 		#self.SetDoubleBuffered(True)
-		self.Bind(wx.EVT_PAINT, self.OnPaint)
+		#self.Bind(wx.EVT_PAINT, self.OnPaint)
 		
 		self.Bind(wx.EVT_LEFT_UP, self.OnLeftUp)
 		self.Bind(wx.EVT_LEFT_DOWN, self.OnLeftDown)
 		self.Bind(wx.EVT_MOTION, self.OnMotion)
+		self.Bind(wx.EVT_MOUSEWHEEL, self.OnScroll)
+		#self.Bind(wx.EVT_SCROLLWIN, self.OnDragScroll)
+		
+
 		
 	def updateGUI(self, infos=False):
 
@@ -86,33 +201,65 @@ class DrawingArea(wx.Panel):
 		# update some var
 		self.ladderFontSize = int(self.infos['fontsize'])  #px
 		
-		self.OnPaint("non")
+
+
+		self.UpdateDrawing()
+
+
 	
 	
 	def returnInfo(self):
 		return self.infos
+	
+	def px2Dist(self, px):
+		return self.cr.device_to_user_distance(0,px)[1]
 
-	def OnPaint(self, e):
-
+	def Draw(self, dc, export = False, cr = False):
 		
-		dc = wx.PaintDC(self)
-		dc.SetBackground(wx.Brush("White"))
 		dc.Clear() 
-		self.cr = wx.lib.wxcairo.ContextFromDC(dc)
-		
-		width, height = self.GetVirtualSize()	# set hight and width. Its 100, 100 
-		ratio = float(height)/float(width)
-		
+		if export == False:
+
+			self.cr 		= wx.lib.wxcairo.ContextFromDC(dc)
+			width, height 	= self.GetVirtualSize()	# set hight and width. Its 100, 100 
+		else:
+			width, height 	= self.GetVirtualSize()	# set hight and width. Its 100, 100 
+			self.cr = cr
 
 		
 		if width != 0 and height != 0 and height > 100 and width > 100:
 			#self.cr.scale(width*ratio,height)
 			#self.cr.scale(0.001, 0.001) 			# make it 1000*ratiox1000
-			self.cr.translate (width/2,height/2)
+			self.cr.translate (width/2,height/2)	# set center
+			self.cr.scale(self.zoom, self.zoom)		# zoom
+			
+			sx,sy = self.scroll
+
+			self.cr.translate (sx,sy)				# move scroll
+			
+			#self.DoDrawing() 
+
+
+			# first the image, as background
+			self.openFile()
+
 		
-			self.DoDrawing() 
+			# crop:
+			self.drawCrop()
+
 		
-		self.dc = dc
+			# ladder
+			self.drawLadder()
+
+		
+			# draw labels?
+			if len(self.laneMarkers) > 0:
+				self.drawLabels()
+			
+			# draw export?
+			self.selectExportRange()
+		
+		return True
+		
 	
 	def OnLeftDown(self,e):
 		
@@ -144,49 +291,74 @@ class DrawingArea(wx.Panel):
 		
 	
 	def OnLeftUp(self,event):
-		x, y = self.ScreenToClient(wx.GetMousePosition())
-		x2, y2 = self.cr.device_to_user(x,y)
-		
+		x, y 			= self.ScreenToClient(wx.GetMousePosition())
+		x2, y2 			= self.cr.device_to_user(x,y)
+		ctrl 			= event.ControlDown()
 		self.tempLadder = False
 		
 		# if draw lader lines:
-		if self.infos["currentAction"] == "drawLadderLines":
+		if self.infos["currentAction"] == "drawLadderLines" and ctrl == False:
 			self.drawnLadders[len(self.drawnLadders)-1][3].append((x2,y2))
 			
 
 		
 		# now allow drawing lines
-		if self.infos["currentAction"]=="addLadder":
+		if self.infos["currentAction"]=="addLadder" and ctrl == False:
 			self.infos["currentAction"] = "drawLadderLines"
 		
-		if self.infos["currentAction"] == "SelectExport":
+		if self.infos["currentAction"] == "SelectExport" and ctrl == False:
 			# reset, save, reset another
 			self.drawExport = False
+			self.updateGUI()
 			self.saveFile()
 			self.infos["currentAction"] = False
 	
-		if self.infos["currentAction"] == 'LabelLanes':
+		if self.infos["currentAction"] == 'LabelLanes' and ctrl == False:
 			self.laneMarkers.append((x2,y2))
 		
 		self.updateGUI()
+		return True  
 		
+	def OnScroll(self, event):
+
+		ctrl 		= event.ControlDown()
+		rotation 	= event.GetWheelRotation()
+
+		# zoom:
+		if rotation > 0:
+			self.zoom = self.zoom  + 0.1
+		else:
+			self.zoom = self.zoom  - 0.1
+		if self.zoom < 0.1:
+			self.zoom = 0.1
 		
-		
-		
+		self.updateGUI()
 		return True   
 	
 	def OnMotion(self, event): 
-		
+		updateNow = False
 		# dragg and drop:
 		if event.Dragging() and event.LeftIsDown():
 			
 			# previous x2, y2:
-			x2Prev, y2Prev = self.dragging[1]
-			x, y = self.ScreenToClient(wx.GetMousePosition())
-			x2, y2 = self.cr.device_to_user(x,y)
-			self.dragging[1] = (x2,y2)
+			x2Prev, y2Prev 		= self.dragging[1]
+			x, y 				= self.ScreenToClient(wx.GetMousePosition())
+			x2, y2 				= self.cr.device_to_user(x,y)
+			dx					= x2-x2Prev
+			dy					= y2-y2Prev
+			self.dragging[1] 	= (x2,y2)
+			ctrl 				= event.ControlDown() # if conmtrol key is down:
 			
-			if self.infos["currentAction"]=="addLadder":
+			if ctrl:
+				# control is down, so mouve the whole canvas:
+				sx, sy = self.scroll
+				
+				sx = sx + dx
+				sy = sy + dy
+				self.scroll = (sx,sy)
+				updateNow = True
+				
+			elif self.infos["currentAction"]=="addLadder":
 				
 				# remove the last item, as this is the temp ladder
 				if self.tempLadder != False:
@@ -196,7 +368,8 @@ class DrawingArea(wx.Panel):
 				selLadder = self.infos["ladder"]
 				self.tempLadder = [selLadder,self.dragging[0],self.dragging[1],[]]
 				self.drawnLadders.append(self.tempLadder)
-				
+				updateNow = True
+
 			
 			elif self.ImageClick == True and self.infos["currentAction"] == "MoveImage":	
 				# current position:
@@ -206,26 +379,33 @@ class DrawingArea(wx.Panel):
 				newY = cy + y2-y2Prev
 				
 				self.imagePos = (newX, newY)
+				updateNow = True
 			
 			elif self.infos["currentAction"] == "RotateImage":	
 				# current position:
 				self.infos["rotate"] = 0.01 * (self.dragging[0][0] - self.dragging[1][0])
+				updateNow = True
+				
 			
 			elif self.infos["currentAction"] == "CropImage":
 				self.imageCrop=[False,False]
 				self.imageCrop[0] = self.dragging[0]
 				self.imageCrop[1] = (x2,y2)
+				updateNow = True
 				
 			elif self.infos["currentAction"]== "SelectExport":
 				# select area to export:
 				self.imageExport=[False,False]
 				self.imageExport[0] = self.dragging[0]
 				self.imageExport[1] = (x2,y2)
+				updateNow = True
 				
-			else:
-				print "nothing to do"
-				
-			self.updateGUI()
+			#else:
+			#	print "nothing to do"
+			
+
+			if updateNow:
+				self.updateGUI()
 		
 
 
@@ -252,31 +432,7 @@ class DrawingArea(wx.Panel):
 		return hit
 		
 	
-	def DoDrawing(self):
-		# first the image, as background
-		self.openFile()
-		
-		# crop:
-		self.drawCrop()
-		
-		# ladder
-		self.drawLadder()
-		
-		# draw labels?
-		if len(self.laneMarkers) > 0:
-			self.drawLabels()
-		# draw export?
-		self.selectExportRange()
-		
-		
-		'''
-		self.cr.set_source_rgb (0.2 , 0.23 , 0.9)
-		self.cr.rectangle(10 , 15, 90, 60)
-		self.cr.fill()
-
-		self.cr.set_source_rgb(0.9 , 0.1 , 0.1)
-		self.cr.rectangle(130 , 15, 90, 60)
-		self.cr.fill()'''
+	
 		
 		
 
@@ -295,6 +451,7 @@ class DrawingArea(wx.Panel):
 			posyB = posy + self.infos["imageHight"]/2
 			
 			
+
 			#self.cr.translate(posxB,posyB)
 			
 			# rotate canvas?
@@ -303,14 +460,17 @@ class DrawingArea(wx.Panel):
 			self.cr.rectangle(posx, posy,self.infos["imageWidth"],self.infos["imageHight"])
 			# copy path
 			self.imagePath = self.cr.copy_path()
-			#self.cr.clip()
-			#self.cr.new_path()
-			
-			# make the image
-			imageSurface = cairo.ImageSurface(cairo.FORMAT_A1, 800,800)
-			image = imageSurface.create_for_data(self.infos["imageData"], cairo.FORMAT_RGB24, self.infos["imageWidth"], self.infos["imageHight"])
 
-			self.cr.set_source_surface(image,posx,posy)
+			
+			# create image
+			imgformat 		= cairo.FORMAT_RGB24
+			imageSurface 	= cairo.ImageSurface( imgformat, self.infos["imageWidth"],self.infos["imageHight"])
+			stride 			= cairo.ImageSurface.format_stride_for_width(imgformat, self.infos["imageWidth"])		
+			# new wx load method:
+			imageSurface = wx.lib.wxcairo.ImageSurfaceFromBitmap(self.infos['wxBitmap'])
+			#image 			= imageSurface.create_for_data(self.infos["imageData"], imgformat, self.infos["imageWidth"], self.infos["imageHight"],stride)
+			
+			self.cr.set_source_surface(imageSurface,posx,posy)
 			
 			# paint the image
 			self.cr.paint()
@@ -318,33 +478,30 @@ class DrawingArea(wx.Panel):
 			
 			# rotate back!
 			self.cr.rotate(-self.infos["rotate"])
-			#self.cr.translate(0,0)
 
-			#imageSurface.destroy()
 
 
 	# Ladders
 	def drawLadder(self):
-		
-		unit = self.infos["unit"]
-
-
+		# settings
+		unit 		= self.infos["unit"]
+		self.cr.select_font_face(self.infos['fontfamily'], self.infos['fontstyle'], self.infos['fontweight'])
+		self.cr.set_font_size(self.px2Dist(self.ladderFontSize) ); #px
+		self.cr.set_source_rgb (0,0,0)
+				
+		# main loop
 		for ladder in self.drawnLadders:
-			name 	= ladder[0]
-			start 	= ladder[1]
-			stop  	= ladder[2]
+			name 		= ladder[0]
+			start 		= ladder[1]
+			stop  		= ladder[2]
 			
 			# where are the fragments on the gel?
-			positions = ladder[3]
-			ypositions = []
-			xpositions = []
-			for i in positions:
-				xpositions.append(i[0])
-				ypositions.append(i[1])
-				
+			positions 	= ladder[3]	
+
 			# get middle x range for lines:
 			if len(positions) > 0:
-				averageX = sum(xpositions)/len(xpositions)
+				averageX = sum(v[0] for v in positions)/len(positions)
+				#averageX = sum(xpositions)/len(xpositions)
 			else:
 				averageX = 0
 			
@@ -380,14 +537,9 @@ class DrawingArea(wx.Panel):
 				
 				# only draw if we did not yet specify the bands
 				# or if there is one by click!
-				if len(ypositions) == 0 or i < len(ypositions):
+				if len(positions) == 0 or i < len(positions):
 					
-					
-					self.cr.select_font_face('Arial', cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
-					self.cr.set_font_size(self.ladderFontSize ); #px
-					self.cr.set_source_rgb (0,0,0)
 					xbearing, ybearing, TextWidth, TextHeight, xadvance, yadvance = self.cr.text_extents(text)
-					
 					
 					# check if ladder is to be drawn right or left:
 					if averageX >= start[0]:
@@ -400,22 +552,23 @@ class DrawingArea(wx.Panel):
 						ladderSite=False
 					
 					self.cr.show_text(text)
-				
-					if i <= len(ypositions) and len(ypositions) > 0:
+					
+					if i <= len(positions) and len(positions) > 0:
 						# also draw the line for this fragment
 						self.cr.set_source_rgb(0,0,0) # Solid color
-						self.cr.set_line_width(1) # or 0.1
+						self.cr.set_line_width(self.px2Dist(1)) # or 0.1
 						if ladderSite:
-							self.cr.move_to(start[0]+3,position-self.ladderFontSize/2)
-							self.cr.line_to(start[0]+7,position-self.ladderFontSize/2)
-							self.cr.line_to(averageX-8,ypositions[i])						
-							self.cr.line_to(averageX,ypositions[i])
+							self.cr.move_to(start[0]+self.px2Dist(3),position-TextHeight/4)
+							self.cr.line_to(start[0]+self.px2Dist(7),position-TextHeight/4)
+							self.cr.line_to(averageX-self.px2Dist(8),positions[i][1])						
+							self.cr.line_to(averageX,positions[i][1])
 						else:
-							self.cr.move_to(start[0]-3,position-self.ladderFontSize/2)
-							self.cr.line_to(start[0]-7,position-self.ladderFontSize/2)
-							self.cr.line_to(averageX+8,ypositions[i])						
-							self.cr.line_to(averageX,ypositions[i])
+							self.cr.move_to(start[0]-self.px2Dist(3),position-TextHeight/4)
+							self.cr.line_to(start[0]-self.px2Dist(7),position-TextHeight/4)
+							self.cr.line_to(averageX+self.px2Dist(8),positions[i][1])						
+							self.cr.line_to(averageX,positions[i][1])
 						self.cr.stroke()
+					
 				
 				i = i+1
 
@@ -455,6 +608,9 @@ class DrawingArea(wx.Panel):
 			#lower
 			self.cr.rectangle(-width/2, posY2,  width,height/2-posY2)
 			self.cr.fill()
+			
+				
+		
 		
 		return True
 			
@@ -472,6 +628,9 @@ class DrawingArea(wx.Panel):
 		markertype = self.infos['marks']
 		if markertype == "ABC" or markertype == "abc":
 			markerLst = labelList[markertype]
+		
+		elif markertype == "custom":
+			markerLst = self.infos['custommarks']
 		else:
 			# normal numbers
 			markerLst = range(1,len(self.laneMarkers)+1)
@@ -488,13 +647,23 @@ class DrawingArea(wx.Panel):
 			# make str
 			text = str(text)
 			
-			self.cr.select_font_face('Arial', cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
-			self.cr.set_font_size(self.ladderFontSize ); #px
+			self.cr.select_font_face(self.infos['fontfamily'], self.infos['fontstyle'], self.infos['fontweight'])
+			self.cr.set_font_size(self.px2Dist(self.ladderFontSize)); #px
 			self.cr.set_source_rgb (0,0,0)
 			xbearing, ybearing, TextWidth, TextHeight, xadvance, yadvance = self.cr.text_extents(text)
 			
-			self.cr.move_to(pos[0]-TextWidth/2, averageY)
-			self.cr.show_text(text)
+			# custom labels will no be centered, but can be rotated to fit
+			if markertype == "custom":
+				#self.infos['rotateLabel']
+				self.cr.save()
+				self.cr.move_to(pos[0], averageY)
+				self.cr.rotate(math.radians(self.infos['rotateLabel']))
+				self.cr.show_text(text)
+				self.cr.restore()		
+			else:
+				self.cr.move_to(pos[0]-TextWidth/2, averageY)
+				self.cr.show_text(text)
+			
 			
 			i = i + 1
 				
@@ -515,24 +684,55 @@ class DrawingArea(wx.Panel):
 			self.cr.stroke()
 		return True
 	
+	
+	
+	
+	
 	def saveFile(self):
 		
 		# show dialog
 		saveFileDialog = wx.FileDialog(self, "Save your image file", "", self.infos["path"],
-				                       "Image files (*.png)|*.png;", wx.FD_SAVE )
+				                       "Image files (*.svg)|*.svg;", wx.FD_SAVE )
 		# check if file was opened
 		if saveFileDialog.ShowModal() == wx.ID_CANCEL:
 			return     # the user changed idea...
 
 		# proceed loading the file chosen by the user
 		# this can be done with e.g. wxPython input streams:
-		self.infos["fileExport"] = (saveFileDialog.GetPath())
-		# add .png
-		if self.infos["fileExport"][-4:] != ".png" and self.infos["fileExport"][-4:] != ".PNG":
-			self.infos["fileExport"] = "%s%s" %(self.infos["fileExport"],".png")
+		self.infos["fileExport"] = saveFileDialog.GetPath()
+		# add .svg
+		if self.infos["fileExport"][-4:] != ".svg" and self.infos["fileExport"][-4:] != ".SVG":
+			self.infos["fileExport"] = "%s%s" %(self.infos["fileExport"],".svg")
 		
-		self.saveSnapshot()
+		#self.saveSnapshot()
+		self.exportAs(self.infos["fileExport"])
+	
+	
+	def exportAs(self, filepath, fileType=".svg"):
+		'''	This method is similar to update_ownUI only that it 
+			exports a file
+			it makes a surface as svg instead of wx.dc
+		'''
+		# create new surface:
+		fo = file(filepath, 'w')
+		width, height = self.GetVirtualSize()	 # set to 1000x1000, can be anything
 		
+		if fileType==".svg":
+			surface = cairo.SVGSurface (fo, width, height)
+		#elif fileType==".png":
+			# does not work yet!
+			#surface = cairo.ImageSurface(fo, width, height) 
+		else:
+			return False
+
+		ctx = cairo.Context(surface)
+		
+		
+		self.ExportSVG(ctx)
+		surface.finish()
+		self.updateGUI()
+		return True
+	
 	
 	def saveSnapshot(self):
 		dcSource = self.dc
@@ -620,6 +820,10 @@ class gelImage(wx.Frame):
 	def __init__(self, *args, **kwargs):
 		super(gelImage, self).__init__(*args, **kwargs) 
 		
+
+
+		sFont = wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL) 
+		
 		# INFOS, is the state of out little programm
 		self.infos = {	"file": False, 
 						"path": "/", 
@@ -627,7 +831,12 @@ class gelImage(wx.Frame):
 						"currentAction": None, 
 						"rotate": 0,
 						"marks":"ABC",
-						"fontsize": 11}
+						"fontsize": 11,
+						"fontfamily": "Arial",
+						"fontstyle": 0,
+						"fontweight": 0,
+						"font": sFont,
+						"rotateLabel": 0}
 		
 		self.StartInfos = self.infos
 		
@@ -636,10 +845,15 @@ class gelImage(wx.Frame):
 						"NEB 1 kb DNA Ladder":[10000,8000,6000,5000,4000,3000,2000,1500,1000,500],
 						"NEB Low Molecular Weight DNA Ladder":[766,500,350,300,250,200,150,100,75,50,25],
 						"Thermo Scientific GeneRuler DNA Ladder Mix": [10000,8000,6000,5000,4000,3500,3000,2500,2000,1500,1200,1000,900,800,700,600,500,400,300,200,100],
-						"Thermo Scientific GeneRuler 100 bp DNA Ladder ": [1000,900,800,700,600,500,400,300,200,100]}
+						"Thermo Scientific GeneRuler 100 bp DNA Ladder ": [1000,900,800,700,600,500,400,300,200,100],
+						"Invitrogen 1 Kb Plus DNA Ladder": [12000,5000,2000,1650,1000,850,650,500,400,300,200,100],
+						"NEB Purple 2-Log DNA Ladder": [10000,8000,6000,5000,4000,3000,2000,1500,1200,1000,900,800,700,600,500,400,300,200,100]}
 						
 		self.units = ["bp","kbp","Da","kDa","u","ku"]
 
+
+			
+		
 		self.InitUI()
 		
 	def updateGUI(self):
@@ -669,9 +883,6 @@ class gelImage(wx.Frame):
 		fileMenu.AppendItem(save_file)
 		self.Bind(wx.EVT_MENU, self.selectExport, save_file)
 		
-		#quit_item = wx.MenuItem(fileMenu, wx.ID_EXIT, 'Quit\tCtrl+W')
-		#fileMenu.AppendItem(quit_item)
-		#self.Bind(wx.EVT_MENU, self.OnQuit, quit_item)
 		
 		menubar.Append(fileMenu, '&File')  
 		
@@ -690,6 +901,10 @@ class gelImage(wx.Frame):
 		action = wx.MenuItem(editMenu, wx.ID_ANY, 'Invert Image\tCTRL+I')
 		editMenu.AppendItem(action)
 		self.Bind(wx.EVT_MENU, self.invertImage, action)
+		
+		action = wx.MenuItem(editMenu, wx.ID_ANY, 'Set Image to grayscale\tCTRL+G')
+		editMenu.AppendItem(action)
+		self.Bind(wx.EVT_MENU, self.grayScale, action)
 		
 		
 		action = wx.MenuItem(editMenu, wx.ID_ANY, 'Rotate Image\tCTRL+R')
@@ -711,7 +926,7 @@ class gelImage(wx.Frame):
 		helpMenu = wx.Menu() 
 		about_item = wx.MenuItem(helpMenu, wx.ID_ABOUT, '&About\tCtrl+A')
 		helpMenu.AppendItem(about_item)
-		#~ self.Bind(wx.EVT_MENU, self.OnAboutBox, about_item)
+
 		menubar.Append(helpMenu, '&Help')     
 
 		self.SetMenuBar(menubar)
@@ -719,13 +934,14 @@ class gelImage(wx.Frame):
 		#----------------------------------------------------
 		# Build window layout
 
-		panel = wx.Panel(self)        
+		self.drawingPanel = wx.Panel(self) 
+		  
 		vbox = wx.BoxSizer(wx.HORIZONTAL)
 		
 		sizer_v = wx.BoxSizer(wx.HORIZONTAL)
 		
 
-		control = wx.Panel(panel)
+		control = wx.Panel(self.drawingPanel)
 		hbox2 = wx.BoxSizer(wx.VERTICAL)
 
 		# add controls:#		
@@ -740,7 +956,7 @@ class gelImage(wx.Frame):
 		for l in self.ladders:
 			self.laddersSel.append(l)
 		
-		self.LadderSelect = wx.ComboBox(control,size=wx.DefaultSize,	choices=self.laddersSel)
+		self.LadderSelect = wx.ComboBox(control,size=wx.DefaultSize,	choices=self.laddersSel,style=wx.CB_READONLY)
 		self.LadderSelect.Bind(wx.EVT_COMBOBOX, self.onLadSelect)
 		self.LadderSelect.SetStringSelection(self.laddersSel[0])
 		self.infos["ladder"] = self.laddersSel[0]
@@ -751,7 +967,7 @@ class gelImage(wx.Frame):
 		# unit:
 		self.txtUnit        = wx.StaticText(control, -1, 'select unit:')
 		self.txtUnit.SetFont(font)
-		self.unitSelect = wx.ComboBox(control,size=wx.DefaultSize,	choices=self.units)
+		self.unitSelect = wx.ComboBox(control,size=wx.DefaultSize,	choices=self.units,style=wx.CB_READONLY)
 		self.unitSelect.Bind(wx.EVT_COMBOBOX, self.onUnitSelect)
 		self.unitSelect.SetStringSelection(self.units[0])
 		self.infos["unit"] = self.unitSelect.GetStringSelection()
@@ -761,9 +977,9 @@ class gelImage(wx.Frame):
 		
 		
 		# label type:
-		self.txtLabel        = wx.StaticText(control, -1, 'select label:')
+		self.txtLabel        = wx.StaticText(control, -1, 'select label type:')
 		self.txtLabel.SetFont(font)
-		self.labelSelect = wx.ComboBox(control,size=wx.DefaultSize,	choices=["ABC","abc","123"])
+		self.labelSelect = wx.ComboBox(control,size=wx.DefaultSize,	choices=["ABC","abc","123", "custom"],style=wx.CB_READONLY)
 		self.labelSelect.Bind(wx.EVT_COMBOBOX, self.onLabelSelect)
 		self.labelSelect.SetStringSelection("ABC")
 		self.infos["marks"] = self.labelSelect.GetStringSelection()
@@ -771,28 +987,29 @@ class gelImage(wx.Frame):
 		self.removeLabels      = wx.Button(control,-1, "remove Labels")		# add enzyme
 		self.removeLabels.Bind(wx.EVT_BUTTON, self.remLabels)
 		
+	
+		# font dialog
+		self.changeFont      = wx.Button(control,-1, "change Font")		# add enzyme
+		self.changeFont.Bind(wx.EVT_BUTTON, self.selectFont)
+	
+		# custom labeling:
+		self.customlabels = wx.TextCtrl(control,-1, "",wx.Point(20,20), wx.Size(200,70), wx.TE_MULTILINE )
+		self.customlabels.Bind(wx.EVT_TEXT, self.customLabelChange)
 		
-		# font size
-		fontsitzes = map(str,  range(6,40))
-		self.txtFontsize        = wx.StaticText(control, -1, 'font size:')
-		self.txtFontsize.SetFont(font)
-		self.labelFontsize = wx.ComboBox(control,size=wx.DefaultSize,	choices=fontsitzes)
-		self.labelFontsize.Bind(wx.EVT_COMBOBOX, self.onFontsizeSelect)
-		self.labelFontsize.SetStringSelection(str(self.infos["fontsize"]))
+		
+		rotateSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.rotateLabel	=  wx.Slider(control, value=0, minValue=-90, maxValue=90,  size=(200, -1), style=wx.SL_HORIZONTAL)
+		self.rotateLabel.Bind(wx.EVT_SCROLL, self.OnSliderScroll)
+		
+		self.rotateTxt =  wx.StaticText(control, label='0 degree') 
+		
+		rotateSizer.Add(self.rotateLabel)
+		rotateSizer.AddSpacer(10)
+		rotateSizer.Add(self.rotateTxt)
 
-		
-		
-		# color:
-		#self.txtcolorFront        = wx.StaticText(control, -1, 'font color:')
-		#self.txtcolorFront.SetFont(font)
-		#self.colorFront 	= wx.TextCtrl(control, -1, size=(180,-1),style=wx.TE_PROCESS_ENTER)
-		
+
+
 		### add elements to control pannel
-		
-		# fontsize:
-		hbox2.Add(self.txtFontsize)
-		hbox2.Add(self.labelFontsize)
-		
 		
 		# ladder
 		hbox2.Add(self.txtLadder)
@@ -804,17 +1021,35 @@ class gelImage(wx.Frame):
 		
 		hbox2.Add(self.removeLadders)
 		
+		hbox2.AddSpacer(20) 
+		
 		# labels
 		hbox2.Add(self.txtLabel)
 		hbox2.Add(self.labelSelect)
+		hbox2.Add(self.customlabels)
+		hbox2.Add(rotateSizer)
+
+		#font face
+		hbox2.Add(self.changeFont)
+
+		
+		# fontsize:
+		#hbox2.Add(self.txtFontsize)
+		#hbox2.Add(self.labelFontsize)
+		
 		hbox2.Add(self.removeLabels)
+		
 		
 		# color font
 		#hbox2.Add(self.txtcolorFront)
 		#hbox2.Add(self.colorFront)
 		
-		self.cairo = DrawingArea(panel, "drawing pannel", self.infos,self.ladders )
+		self.cairo = DrawingArea(self.drawingPanel, "drawing pannel", self.infos,self.ladders )
+		#drawingbox        = wx.BoxSizer(wx.HORIZONTAL)
+		#drawingbox2       = wx.BoxSizer()
 		
+		#drawingbox.Add(self.cairo,1, wx.EXPAND)
+		#drawingbox2.Add(drawingbox,wx.EXPAND)
 		
 		control.SetSizer(hbox2)
 		
@@ -831,7 +1066,7 @@ class gelImage(wx.Frame):
 		vbox.Add(gridsizer, 1, wx.EXPAND|wx.ALL, 15)
 		
 	
-		panel.SetSizer(vbox) 
+		self.drawingPanel.SetSizer(vbox) 
 		self.Maximize()
 		self.SetTitle('gelImage')
 		self.Centre()
@@ -845,7 +1080,7 @@ class gelImage(wx.Frame):
 		
 		# show dialog
 		openFileDialog = wx.FileDialog(self, "Open image file", "", "",
-				                       "Image files (*.png, *.TIF)|*.png;*.PNG;*.tif;*.TIF", wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
+				                       "Image files (*.png, *.TIF, *.jpg)|*.png;*.PNG;*.tif;*.TIF;*.tiff;*.TIFF;*.jpg;*.JPG;*.jpeg;*.JPEG;", wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
 		
 		# check if file was opened
 		if openFileDialog.ShowModal() == wx.ID_CANCEL:
@@ -854,25 +1089,38 @@ class gelImage(wx.Frame):
 		# proceed loading the file chosen by the user
 		# this can be done with e.g. wxPython input streams:
 		self.infos["file"] = (openFileDialog.GetPath())
+		fileName, fileExtension = os.path.splitext(self.infos["file"])
 		
 		# read file
-		self.infos["image"] = Image.open(self.infos["file"])
-		self.infos["image"] = self.infos["image"].convert("RGBA") # convert so tiffs work well
-
-		self.infos["image"].putalpha(256) # create alpha channel
-		self.infos["imageData"]  = numpy.array(self.infos["image"])
-
+		self.infos["image"] 			= Image.open(self.infos["file"])
+		self.infos["image"] 			= self.infos["image"].convert("RGBA") 	# convert colorspace
+		self.infos["image"].putalpha(256) 										# create alpha channel
+		self.infos["imageData"]  		= numpy.array(self.infos["image"])
+		height, width, chanells			= self.infos["imageData"].shape
+	
 		
-		height, width, channels = self.infos["imageData"].shape
+		# try opening Tiff files with outher
+		if fileExtension in [".tif", ".tiff", ".TIF", ".TIFF"]:
+			self.infos['wxBitmap'] 	= wx.Bitmap(self.infos["file"], wx.BITMAP_TYPE_TIF)
+			#wx.Image(self.infos["file"], wx.BITMAP_TYPE_TIF)
+		elif fileExtension in [".png", ".PNG"]:
+			self.infos['wxBitmap'] = wx.Bitmap(self.infos["file"], wx.BITMAP_TYPE_PNG)
+		elif fileExtension in [".jpg", ".JPG", ".jpeg", ".JPEG"]:
+			self.infos['wxBitmap'] = wx.Bitmap(self.infos["file"], wx.BITMAP_TYPE_JPEG)
+		
+		# make an platform independent image out of the file
+		# with this we can perform further calculations
+		# like inverting it or make it grayscale
+		self.infos['wxImage'] 	= self.infos['wxBitmap'].ConvertToImage() 
+		
 		self.infos["imageWidth"] = width
 		self.infos["imageHight"] = height
 		
-		self.infos["image_original"] = self.infos["image"]
+		#self.infos["image_original"] = self.infos["image"]
 		
 		# set mode to move image
 		self.infos["currentAction"]="MoveImage"
-		# update GUI
-		self.updateGUI()
+
 		
 		# set filepath:
 		self.infos['path'] 		= "%s%s" %(os.path.dirname(self.infos["file"]),"/")
@@ -882,39 +1130,116 @@ class gelImage(wx.Frame):
 		
 		# set name
 		self.SetTitle("gelImage - %s" % (self.infos['filename']))
+		
+
+		# update GUI
+		self.updateGUI()
+		
 	
 	def OnSave(self, e):
 		self.cairo.saveFile()
 	
+
+
+
+
+
+
+
+
+
+	def WxBitmapToPilImage(self,  myBitmap ) :
+		return WxImageToPilImage( WxBitmapToWxImage( myBitmap ) )
+
+	def WxBitmapToWxImage(self,  myBitmap ) :
+		return wx.ImageFromBitmap( myBitmap )
+
+
+
+	def PilImageToWxBitmap(self,  myPilImage ) :
+		return WxImageToWxBitmap( PilImageToWxImage( myPilImage ) )
+
+	def PilImageToWxImage( myPilImage ):
+		myWxImage = wx.EmptyImage( myPilImage.size[0], myPilImage.size[1] )
+		myWxImage.SetData( myPilImage.convert( 'RGB' ).tostring() )
+		return myWxImage
+
+	def PilImageToWxImage(self,  myPilImage, copyAlpha=True ) :
+
+		hasAlpha = myPilImage.mode[ -1 ] == 'A'
+		if copyAlpha and hasAlpha :  # Make sure there is an alpha layer copy.
+
+		    myWxImage = wx.EmptyImage( *myPilImage.size )
+		    myPilImageCopyRGBA = myPilImage.copy()
+		    myPilImageCopyRGB = myPilImageCopyRGBA.convert( 'RGB' )    # RGBA --> RGB
+		    myPilImageRgbData =myPilImageCopyRGB.tostring()
+		    myWxImage.SetData( myPilImageRgbData )
+		    myWxImage.SetAlphaData( myPilImageCopyRGBA.tostring()[3::4] )  # Create layer and insert alpha values.
+
+		else :    # The resulting image will not have alpha.
+
+		    myWxImage = wx.EmptyImage( *myPilImage.size )
+		    myPilImageCopy = myPilImage.copy()
+		    myPilImageCopyRGB = myPilImageCopy.convert( 'RGB' )    # Discard any alpha from the PIL image.
+		    myPilImageRgbData =myPilImageCopyRGB.tostring()
+		    myWxImage.SetData( myPilImageRgbData )
+
+		return myWxImage
+
+
+	def imageToPil(self, myWxImage ):
+		myPilImage = Image.new( 'RGB', (myWxImage.GetWidth(), myWxImage.GetHeight()) )
+		myPilImage.fromstring( myWxImage.GetData() )
+		#myPilImage.frombytes("I",(myWxImage.GetWidth(), myWxImage.GetHeight()), myWxImage.GetData())
+		return myPilImage
+
+	def WxImageToWxBitmap(self,  myWxImage ) :
+		return myWxImage.ConvertToBitmap()
+
+
+
+
+
+
+	
 	def invertImage(self, e):
 		
-		image = self.infos["image"]
-		
+		# get the image
+		#self.infos['wxImage'] = self.infos['wxImage'].ConvertToGreyscale()
+		#self.infos['wxImage'] = self.infos['wxImage'].AdjustChannels(-1,-1,-1,1)
+
+		#depth 					= self.infos['wxBitmap'].GetDepth()
+
+		image = self.imageToPil(self.infos['wxImage'])
+
 		if image.mode == 'RGBA':
-			r,g,b,a = image.split()
-			rgb_image = Image.merge('RGB', (r,g,b))
-
-			inverted_image = PIL.ImageOps.invert(rgb_image)
-
-			r2,g2,b2 = inverted_image.split()
-
-			self.infos["image"] = Image.merge('RGBA', (r2,g2,b2,a))
-
-			#final_transparent_image.save('new_file.png')
-
+			r,g,b,a 		= image.split()
+			rgb_image 		= Image.merge('RGB', (r,g,b))
+			inverted_image 	= PIL.ImageOps.invert(rgb_image)
+			r2,g2,b2 		= inverted_image.split()
+			image 			= Image.merge('RGBA', (r2,g2,b2,a))
 		else:
-			self.infos["image"] = PIL.ImageOps.invert(image)
-			#inverted_image.save('new_name.png')
-			
-		self.infos["image"].putalpha(256) # create alpha channel
-		self.infos["imageData"]  = numpy.array(self.infos["image"])
-		height, width, channels = self.infos["imageData"].shape
-		self.infos["imageWidth"] = width
-		self.infos["imageHight"] = height
+			image = PIL.ImageOps.invert(image)
+		
+		
+		self.infos['wxImage'] 	= self.PilImageToWxImage(image)
+		#set the image bitmap
+		self.infos['wxBitmap'] 	= self.infos['wxImage'].ConvertToBitmap(24) # 24 because we losse bit depth in the conversion from image to PIl
+		# should be improved!!!
+	
+		
 		self.updateGUI()
 		
 		return True
 	
+	def grayScale(self,e):
+		self.infos['wxImage'] 	= self.infos['wxImage'].ConvertToGreyscale()
+		#set the image bitmap
+		self.infos['wxBitmap'] 	= self.infos['wxImage'].ConvertToBitmap(self.infos['wxBitmap'].GetDepth())
+	
+		
+		self.updateGUI()
+		return True
 
 	def rotateImage(self,e):
 		self.infos["currentAction"]="RotateImage"
@@ -938,6 +1263,40 @@ class gelImage(wx.Frame):
 	def labelLanes(self,e):
 		self.infos["currentAction"]="LabelLanes"
 		return True
+
+	
+	def selectFont(self, e):
+		data = wx.FontData()
+		data.SetInitialFont(self.infos["font"])
+		#data.SetColour(canvasTextColour)
+
+		dialog = wx.FontDialog(None, data)
+		if dialog.ShowModal() == wx.ID_OK:
+			data = dialog.GetFontData()
+			font = data.GetChosenFont()
+			colour = data.GetColour()
+			self.infos['fontfamily'] 	= font.GetFaceName()
+			self.infos['fontsize'] 		= font.GetPointSize()
+
+			
+			# weight
+			weight	= font.GetWeightString()
+			if weight == "wxFONTWEIGHT_BOLD":
+				self.infos['fontweight'] = cairo.FONT_WEIGHT_BOLD
+			else:
+				self.infos['fontweight'] = cairo.FONT_WEIGHT_NORMAL
+			
+			# style	
+			style	= font.GetStyleString()
+			if style == "wxFONTSTYLE_ITALIC":
+				self.infos['fontstyle'] = cairo.FONT_SLANT_ITALIC
+			else:
+				self.infos['fontstyle'] = cairo.FONT_SLANT_NORMAL
+			
+			
+			self.infos['font'] 			= font
+			print self.infos, style
+		self.updateGUI()
 	
 	def selectExport(self,e):
 		self.infos["currentAction"]="SelectExport"
@@ -956,13 +1315,40 @@ class gelImage(wx.Frame):
 	
 	def onLabelSelect(self,e):
 		self.infos["marks"] = self.labelSelect.GetStringSelection()
+		
+		# custom labels
+		if self.infos['marks'] == "custom":
+			self.infos["custommarks"] = self.customlabels.GetValue().split('\n')
 		self.infos["currentAction"]="LabelLanes"
 		self.updateGUI()
 	
+	def customLabelChange(self, e):
+		
+		self.infos["custommarks"] = self.customlabels.GetValue().split('\n')
+		self.updateGUI()
+		e.Skip()
+	
+	def OnSliderScroll(self,e):
+		obj = e.GetEventObject()
+		val = obj.GetValue()
+		
+		self.infos['rotateLabel'] = int(val)
+		self.rotateTxt.SetLabel("%s degree" % (str(val))) 
+		self.updateGUI()
+		return True
+	
+	'''
 	def onFontsizeSelect(self, e):
 		self.infos["fontsize"] = self.labelFontsize.GetStringSelection()
-		print self.infos["fontsize"]
+		#print self.infos["fontsize"]
 		self.updateGUI()
+	
+	def onFontFaceSelect(self, e):
+		self.infos["fontface"] = self.labelFontFace.GetStringSelection()
+		print self.infos["fontface"]
+		self.updateGUI()
+	
+	'''
 	
 	def remLadder(self,e):
 		self.cairo.removeLadders()
