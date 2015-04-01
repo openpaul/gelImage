@@ -65,8 +65,11 @@ class BufferedWindow(wx.Window):
         # OnSize called to make sure the buffer is initialized.
         # This might result in OnSize getting called twice on some
         # platforms at initialization, but little harm done.
+
+        self.dc = wx.MemoryDC()
         self.OnSize(None)
         self.paint_count = 0
+
 
     def Draw(self, dc):
         ## just here as a place holder.
@@ -109,7 +112,7 @@ class BufferedWindow(wx.Window):
 
         This code re-draws the buffer, then calls Update, which forces a paint event.
         """
-        dc = wx.MemoryDC()
+        dc = self.dc#wx.MemoryDC()
         dc.SelectObject(self._Buffer)
         self.Draw(dc)
         del dc # need to get rid of the MemoryDC before Update() is called.
@@ -139,6 +142,8 @@ class DrawingArea(BufferedWindow):
 		self.infos 		= infos
 		self.ladders 	= ladders
 		
+
+
 		# some variables
 		self.leftclicks = []
 		self.dragging 	= [False,False]
@@ -172,7 +177,7 @@ class DrawingArea(BufferedWindow):
 		self.Bind(wx.EVT_MOUSEWHEEL, self.OnScroll)
 		#self.Bind(wx.EVT_SCROLLWIN, self.OnDragScroll)
 		
-
+		
 		
 	def updateGUI(self, infos=False):
 
@@ -197,11 +202,13 @@ class DrawingArea(BufferedWindow):
 		return self.cr.device_to_user_distance(0,px)[1]
 
 	def Draw(self, dc, export = False, cr = False):
-		
 		dc.Clear() 
 		if export == False:
+			
+			self.cr = wx.lib.wxcairo.ContextFromDC(dc)
 
-			self.cr 		= wx.lib.wxcairo.ContextFromDC(dc)
+
+				
 			width, height 	= self.GetVirtualSize()	# set hight and width. Its 100, 100 
 		else:
 			width, height 	= self.GetVirtualSize()	# set hight and width. Its 100, 100 
@@ -534,6 +541,7 @@ class DrawingArea(BufferedWindow):
 						ladderSite=False
 					
 					self.cr.show_text(text)
+					#self.cr.show_glyphs(text)
 					
 					if i <= len(positions) and len(positions) > 0:
 						# also draw the line for this fragment
@@ -671,7 +679,7 @@ class DrawingArea(BufferedWindow):
 	
 	
 	def saveFile(self):
-		
+		print "save file"
 		# show dialog
 		saveFileDialog = wx.FileDialog(self, "Save your image file", "", self.infos["path"],
 				                       "Image files (*.svg)|*.svg;", wx.FD_SAVE )
@@ -711,7 +719,7 @@ class DrawingArea(BufferedWindow):
 		
 		
 		self.ExportSVG(ctx)
-		surface.finish()
+		#surface.finish()
 		self.updateGUI()
 		return True
 	
@@ -810,7 +818,7 @@ class gelImage(wx.Frame):
 		
 
 
-		sFont = wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL) 
+		sFont = wx.Font(20, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL) 
 		
 		# INFOS, is the state of out little programm
 		self.infos = {	"file": False, 
@@ -819,7 +827,7 @@ class gelImage(wx.Frame):
 						"currentAction": None, 
 						"rotate": 0,
 						"marks":"ABC",
-						"fontsize": 11,
+						"fontsize": 20,
 						"fontfamily": "Arial",
 						"fontstyle": 0,
 						"fontweight": 0,
@@ -835,7 +843,8 @@ class gelImage(wx.Frame):
 						"Thermo Scientific GeneRuler DNA Ladder Mix": [10000,8000,6000,5000,4000,3500,3000,2500,2000,1500,1200,1000,900,800,700,600,500,400,300,200,100],
 						"Thermo Scientific GeneRuler 100 bp DNA Ladder ": [1000,900,800,700,600,500,400,300,200,100],
 						"Invitrogen 1 Kb Plus DNA Ladder": [12000,5000,2000,1650,1000,850,650,500,400,300,200,100],
-						"NEB Purple 2-Log DNA Ladder": [10000,8000,6000,5000,4000,3000,2000,1500,1200,1000,900,800,700,600,500,400,300,200,100]}
+						"NEB Purple 2-Log DNA Ladder": [10000,8000,6000,5000,4000,3000,2000,1500,1200,1000,900,800,700,600,500,400,300,200,100],
+						"Ultra Low Range DNA-Leiter II (peqlab)":[700,500,400,300,200,150,100,75,50,25]}
 						
 		self.units = ["bp","kbp","Da","kDa","u","ku"]
 
@@ -1135,61 +1144,6 @@ class gelImage(wx.Frame):
 
 
 
-
-
-	def WxBitmapToPilImage(self,  myBitmap ) :
-		return WxImageToPilImage( WxBitmapToWxImage( myBitmap ) )
-
-	def WxBitmapToWxImage(self,  myBitmap ) :
-		return wx.ImageFromBitmap( myBitmap )
-
-
-
-	def PilImageToWxBitmap(self,  myPilImage ) :
-		return WxImageToWxBitmap( PilImageToWxImage( myPilImage ) )
-
-	def PilImageToWxImage( myPilImage ):
-		myWxImage = wx.EmptyImage( myPilImage.size[0], myPilImage.size[1] )
-		myWxImage.SetData( myPilImage.convert( 'RGB' ).tostring() )
-		return myWxImage
-
-	def PilImageToWxImage(self,  myPilImage, copyAlpha=True ) :
-
-		hasAlpha = myPilImage.mode[ -1 ] == 'A'
-		if copyAlpha and hasAlpha :  # Make sure there is an alpha layer copy.
-
-		    myWxImage = wx.EmptyImage( *myPilImage.size )
-		    myPilImageCopyRGBA = myPilImage.copy()
-		    myPilImageCopyRGB = myPilImageCopyRGBA.convert( 'RGB' )    # RGBA --> RGB
-		    myPilImageRgbData =myPilImageCopyRGB.tostring()
-		    myWxImage.SetData( myPilImageRgbData )
-		    myWxImage.SetAlphaData( myPilImageCopyRGBA.tostring()[3::4] )  # Create layer and insert alpha values.
-
-		else :    # The resulting image will not have alpha.
-
-		    myWxImage = wx.EmptyImage( *myPilImage.size )
-		    myPilImageCopy = myPilImage.copy()
-		    myPilImageCopyRGB = myPilImageCopy.convert( 'RGB' )    # Discard any alpha from the PIL image.
-		    myPilImageRgbData =myPilImageCopyRGB.tostring()
-		    myWxImage.SetData( myPilImageRgbData )
-
-		return myWxImage
-
-
-	def imageToPil(self, myWxImage ):
-		myPilImage = Image.new( 'RGB', (myWxImage.GetWidth(), myWxImage.GetHeight()) )
-		myPilImage.fromstring( myWxImage.GetData() )
-		#myPilImage.frombytes("I",(myWxImage.GetWidth(), myWxImage.GetHeight()), myWxImage.GetData())
-		return myPilImage
-
-	def WxImageToWxBitmap(self,  myWxImage ) :
-		return myWxImage.ConvertToBitmap()
-
-
-
-
-
-
 	
 	def invertImage(self, e):
 		
@@ -1199,8 +1153,10 @@ class gelImage(wx.Frame):
 
 		#depth 					= self.infos['wxBitmap'].GetDepth()
 
-		image = self.imageToPil(self.infos['wxImage'])
-
+		image = self.infos['wxImage']
+		print "inverting is not working"
+		#print image.GetData()
+		'''
 		if image.mode == 'RGBA':
 			r,g,b,a 		= image.split()
 			rgb_image 		= Image.merge('RGB', (r,g,b))
@@ -1216,7 +1172,7 @@ class gelImage(wx.Frame):
 		self.infos['wxBitmap'] 	= self.infos['wxImage'].ConvertToBitmap(24) # 24 because we losse bit depth in the conversion from image to PIl
 		# should be improved!!!
 	
-		
+		'''
 		self.updateGUI()
 		
 		return True
