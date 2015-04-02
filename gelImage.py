@@ -21,9 +21,9 @@ import cairo
 import os.path
 
 # to load images:
-from PIL import Image
-import PIL.ImageOps 
-import numpy
+#from PIL import Image
+#import PIL.ImageOps 
+#import numpy
 
 import math
 
@@ -434,10 +434,10 @@ class DrawingArea(BufferedWindow):
 			# rectangle for the image
 			posx, posy = self.imagePos
 			posx = posx - self.infos["imageWidth"]/2
-			posy = posy - self.infos["imageHight"]/2
+			posy = posy - self.infos["imageHeight"]/2
 			
 			posxB = posx + self.infos["imageWidth"]/2
-			posyB = posy + self.infos["imageHight"]/2
+			posyB = posy + self.infos["imageHeight"]/2
 			
 			
 
@@ -446,18 +446,18 @@ class DrawingArea(BufferedWindow):
 			# rotate canvas?
 			self.cr.rotate(self.infos["rotate"])
 			
-			self.cr.rectangle(posx, posy,self.infos["imageWidth"],self.infos["imageHight"])
+			self.cr.rectangle(posx, posy,self.infos["imageWidth"],self.infos["imageHeight"])
 			# copy path
 			self.imagePath = self.cr.copy_path()
 
 			
 			# create image
 			imgformat 		= cairo.FORMAT_RGB24
-			imageSurface 	= cairo.ImageSurface( imgformat, self.infos["imageWidth"],self.infos["imageHight"])
+			imageSurface 	= cairo.ImageSurface( imgformat, self.infos["imageWidth"],self.infos["imageHeight"])
 			stride 			= cairo.ImageSurface.format_stride_for_width(imgformat, self.infos["imageWidth"])		
 			# new wx load method:
 			imageSurface = wx.lib.wxcairo.ImageSurfaceFromBitmap(self.infos['wxBitmap'])
-			#image 			= imageSurface.create_for_data(self.infos["imageData"], imgformat, self.infos["imageWidth"], self.infos["imageHight"],stride)
+			#image 			= imageSurface.create_for_data(self.infos["imageData"], imgformat, self.infos["imageWidth"], self.infos["imageHeight"],stride)
 			
 			self.cr.set_source_surface(imageSurface,posx,posy)
 			
@@ -1090,11 +1090,11 @@ class gelImage(wx.Frame):
 		fileName, fileExtension = os.path.splitext(self.infos["file"])
 		
 		# read file
-		self.infos["image"] 			= Image.open(self.infos["file"])
-		self.infos["image"] 			= self.infos["image"].convert("RGBA") 	# convert colorspace
-		self.infos["image"].putalpha(256) 										# create alpha channel
-		self.infos["imageData"]  		= numpy.array(self.infos["image"])
-		height, width, chanells			= self.infos["imageData"].shape
+		#self.infos["image"] 			= Image.open(self.infos["file"])
+		#self.infos["image"] 			= self.infos["image"].convert("RGBA") 	# convert colorspace
+		#self.infos["image"].putalpha(256) 										# create alpha channel
+		#self.infos["imageData"]  		= numpy.array(self.infos["image"])
+		#height, width, chanells			= self.infos["imageData"].shape
 	
 		
 		# try opening Tiff files with outher
@@ -1111,8 +1111,8 @@ class gelImage(wx.Frame):
 		# like inverting it or make it grayscale
 		self.infos['wxImage'] 	= self.infos['wxBitmap'].ConvertToImage() 
 		
-		self.infos["imageWidth"] = width
-		self.infos["imageHight"] = height
+		self.infos["imageWidth"] = self.infos['wxImage'] .GetWidth()
+		self.infos["imageHeight"] = self.infos['wxImage'] .GetHeight()
 		
 		#self.infos["image_original"] = self.infos["image"]
 		
